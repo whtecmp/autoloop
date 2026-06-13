@@ -635,6 +635,14 @@ def validate_workspace_plan_path(args: argparse.Namespace, task: SelectedTask, p
     return plan_path.relative_to(workspace).as_posix()
 
 
+def normalize_plan_src_mentions(args: argparse.Namespace, task: SelectedTask, canonical_plan_file: str) -> None:
+    plan_path = Path(args.workspace) / canonical_plan_file
+    text = plan_path.read_text(encoding="utf-8")
+    normalized = re.sub(r"\bsrc\b(?!-\d+)", f"src-{task.id}", text)
+    if normalized != text:
+        plan_path.write_text(normalized, encoding="utf-8")
+
+
 def resolve_plan_file_from_comments(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> str:
     plan_file = latest_comment_value(client, task.id, "PLAN_FILE:")
     if not plan_file:
@@ -815,17 +823,23 @@ def failure_output(task: SelectedTask, comment: str) -> dict[str, Any]:
     return {"task_id": task.id, "status": "failure", "comments": [comment]}
 
 
+def output_file_issue_output(task: SelectedTask, comment: str) -> dict[str, Any]:
+    output = failure_output(task, comment)
+    output["output_file_issue"] = True
+    return output
+
+
 def malformed_output(task: SelectedTask, message: str, content: str | None = None) -> dict[str, Any]:
     comment = f"Skill returned malformed output\n\n{message}"
     if content is not None:
         comment += f"\n\nOutput:\n{content}"
-    return failure_output(task, comment)
+    return output_file_issue_output(task, comment)
 
 
 def read_handler_output(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> dict[str, Any]:
     path = handler_output_path(args, task)
     if not path.exists():
-        return failure_output(task, "Skill didn't return any output")
+        return output_file_issue_output(task, "Skill didn't return any output")
 
     try:
         raw_file_text = path.read_text(encoding="utf-8")
@@ -846,7 +860,7 @@ def read_handler_output(args: argparse.Namespace, client: KanboardClient, task: 
 
     status = payload.get("status")
     if status == "pending":
-        return failure_output(task, "Skill didn't return any output")
+        return output_file_issue_output(task, "Skill didn't return any output")
     if status not in {"success", "failure"}:
         return malformed_output(task, "status must be exactly 'success' or 'failure'", raw_file_text)
 
@@ -866,9 +880,34 @@ def add_output_comments(client: KanboardClient, task_id: int, output: dict[str, 
             client.add_comment(task_id, comment)
 
 
+def output_file_issue_marker(task: SelectedTask) -> str:
+    return f"ANOTHER ISSUE WITH OUTPUT FILE - IN COLUMN {task.column.title}"
+
+
+def count_exact_task_comments(client: KanboardClient, task_id: int, text: str) -> int:
+    count = 0
+    for comment in client.get_comments(task_id):
+        content = str(comment.get("comment") or comment.get("content") or "")
+        if content.strip() == text:
+            count += 1
+    return count
+
+
 def handle_failure_output(args: argparse.Namespace, client: KanboardClient, task: SelectedTask, output: dict[str, Any]) -> None:
-    change_color(args, task.id, "red")
     add_output_comments(client, task.id, output)
+    if output.get("output_file_issue") is True:
+        marker = output_file_issue_marker(task)
+        client.add_comment(task.id, marker)
+        issue_count = count_exact_task_comments(client, task.id, marker)
+        remove_output_file(handler_output_path(args, task))
+        if issue_count < args.output_file_issue_limit:
+            remove_ticket_lock(args.ticket_lock_url, args.project_name, task.id, task.column.title)
+            change_color(args, task.id, "yellow")
+            return
+        change_color(args, task.id, "red")
+        return
+
+    change_color(args, task.id, "red")
     remove_output_file(handler_output_path(args, task))
 
 
@@ -923,6 +962,8 @@ def commit_push_plan(args: argparse.Namespace, client: KanboardClient, task: Sel
         mark_red_and_comment(args, client, task.id, f"Invalid PLAN_FILE: {plan_file}")
         remove_output_file(handler_output_path(args, task))
         raise
+
+    normalize_plan_src_mentions(args, task, canonical_plan_file)
 
     try:
         git_commit_all(plans_dir, f"Add plan for Kanboard task {task.id}")
@@ -1112,6 +1153,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--model", help="Optional model passed to opencode run with -m")
     parser.add_argument("--opencode-arg", action="append", default=[], help="Extra argument passed to opencode run before the prompt; repeat as needed")
     parser.add_argument("--max-tasks", type=positive_int, default=1, help="Maximum handler tasks to run serially; 0 means until no unlocked eligible task remains (default: 1)")
+    parser.add_argument("--output-file-issue-limit", type=positive_int, default=5, help="Number of output-file issue comments for a column before leaving the task red (default: 5)")
     parser.add_argument("--run-dir", default=".autoloop/runs", help="Directory for rendered prompts and run metadata (default: .autoloop/runs)")
     parser.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"), help="Run id used under --run-dir")
     parser.add_argument("--dry-run", action="store_true", help="Render and print the selected handler prompt without running opencode")

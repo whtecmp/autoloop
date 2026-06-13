@@ -5,7 +5,7 @@ description: Use ONLY when handling a yellow Kanboard task in the WIP column by 
 
 # WIP Column Handler
 
-Implement the ticket from its plan in the current implementation directory and fill the pre-created output JSON. Do not change Kanboard task state. Only edit source/test files and run verification; the orchestrator handles all workflow finalization after this skill finishes.
+Implement the ticket from its plan only in the current implementation directory, normally `src-<task_id>`, and fill the pre-created output JSON. Do not change Kanboard task state. Only edit source/test files in `src-<task_id>` and run verification from `src-<task_id>`; the orchestrator handles all workflow finalization after this skill finishes.
 
 ## Inputs
 
@@ -40,7 +40,7 @@ Tool usage rules:
 
 1. Use `kanboard_get_task_details` and `kanboard_get_task_comments` to inspect ticket state and implementation context.
 2. Use `read` to read the plan file and local files/directories. Use `glob` to locate code files by pattern. Use `grep` to search code.
-3. Use write/edit tools for source-code and test changes inside the current implementation directory and to fill the exact absolute `output_json` path.
+3. Use write/edit tools for source-code and test changes only inside the current implementation directory, `src-<task_id>`, and to fill the exact absolute `output_json` path.
 4. Use `bash` only for tests, builds, lint, app runs, and manual checks. Do not use it for repository state-management work.
 5. Do not move the Kanboard task, change its color, or add Kanboard comments directly.
 
@@ -50,7 +50,7 @@ Tool usage rules:
 2. Fetch task comments with `kanboard_get_task_comments`.
 3. Read the plan from the absolute `plan_file` path provided by the orchestrator.
 4. Confirm the plan is specific enough to implement.
-5. Implement the feature in the current implementation directory, not in `src/`.
+5. Implement the feature only in the current implementation directory, `src-<task_id>`. Do not edit files in shared `src/`, `plans/`, `qa-<task_id>`, `merging-<task_id>`, or any other source tree.
 6. Add or update unit tests when applicable.
 7. Run relevant tests, build, lint, and manual checks from the current implementation directory.
 8. Remove temporary test files, logs, scratch files, generated debug artifacts, local app output, and any dirty files unrelated to the actual source/test changes before reporting success.
@@ -61,7 +61,7 @@ Tool usage rules:
 
 Follow the plan, but adapt if the codebase requires it. Keep changes minimal and avoid over-engineering. Mention meaningful deviations from the plan in the output comments.
 
-Never implement directly in the shared `src/` directory. The orchestrator runs this skill inside the isolated implementation directory.
+Never implement directly in the shared `src/` directory. Never modify files outside `src-<task_id>` except for the exact absolute `output_json` file. The orchestrator runs this skill inside the isolated implementation directory.
 
 ## Output JSON
 
