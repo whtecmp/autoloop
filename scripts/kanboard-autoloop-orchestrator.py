@@ -313,6 +313,30 @@ def git_push(repo: Path, *args: str) -> bool:
     )
 
 
+def git_pull_then_push(repo: Path, push_args: tuple[str, ...], retries: int) -> bool:
+    last_error: SourceRefreshError | None = None
+    attempts = max(1, retries)
+    for attempt in range(1, attempts + 1):
+        try:
+            run_command(["git", "pull", "--ff-only", "origin", "dev"], repo)
+            return git_push(repo, *push_args)
+        except SourceRefreshError as exc:
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(0.2)
+                continue
+    assert last_error is not None
+    raise last_error
+
+
+def reset_and_refresh_repo(repo: Path) -> None:
+    run_command(["git", "reset", "--hard"], repo)
+    run_command(["git", "clean", "-fd"], repo)
+    run_command(["git", "fetch", "--all", "--prune"], repo)
+    checkout_dev(repo)
+    run_command(["git", "pull", "--ff-only", "origin", "dev"], repo)
+
+
 def git_rev_parse(repo: Path, ref: str = "HEAD") -> str:
     return run_command(["git", "rev-parse", "--short", ref], repo).stdout.strip()
 
@@ -935,6 +959,13 @@ def handle_failure_output(args: argparse.Namespace, client: KanboardClient, task
     remove_output_file(handler_output_path(args, task))
 
 
+def handle_plan_failure_output(args: argparse.Namespace, client: KanboardClient, task: SelectedTask, output: dict[str, Any]) -> None:
+    try:
+        handle_failure_output(args, client, task, output)
+    finally:
+        reset_and_refresh_repo(Path(args.workspace) / "plans")
+
+
 def handle_plan_file_retry_issue(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> None:
     comment = "PLAN FILE WAS NOT CREATED TRY AGAIN"
     client.add_comment(task.id, comment)
@@ -943,8 +974,10 @@ def handle_plan_file_retry_issue(args: argparse.Namespace, client: KanboardClien
     if issue_count < args.output_file_issue_limit:
         remove_ticket_lock(args.ticket_lock_url, args.project_name, task.id, task.column.title)
         change_color(args, task.id, "yellow")
+        reset_and_refresh_repo(Path(args.workspace) / "plans")
         return
     change_color(args, task.id, "red")
+    reset_and_refresh_repo(Path(args.workspace) / "plans")
 
 
 def advance_success(
@@ -979,7 +1012,10 @@ def complete_from_handler_output(
     output: dict[str, Any],
 ) -> None:
     if output["status"] == "failure":
-        handle_failure_output(args, client, task, output)
+        if task.column.title == "Plan":
+            handle_plan_failure_output(args, client, task, output)
+        else:
+            handle_failure_output(args, client, task, output)
         return
     advance_success(args, client, project_id, columns, task, output)
 
@@ -1001,7 +1037,7 @@ def commit_push_plan(args: argparse.Namespace, client: KanboardClient, task: Sel
 
     try:
         git_commit_all(plans_dir, f"Add plan for Kanboard task {task.id}")
-        empty_push = git_push(plans_dir, "origin", "dev")
+        empty_push = git_pull_then_push(plans_dir, ("origin", "dev"), args.git_push_retries)
     except SourceRefreshError as exc:
         mark_red_git_error(args, client, task, "plan commit/push", exc)
         remove_output_file(handler_output_path(args, task))
@@ -1035,7 +1071,7 @@ def commit_push_wip(args: argparse.Namespace, client: KanboardClient, task: Sele
     try:
         git_commit_all(repo, f"Implement Kanboard task {task.id}")
         commit = git_rev_parse(repo)
-        empty_push = git_push(repo, "-u", "origin", branch)
+        empty_push = git_pull_then_push(repo, ("-u", "origin", branch), args.git_push_retries)
     except SourceRefreshError as exc:
         mark_red_git_error(args, client, task, "implementation commit/push", exc)
         remove_output_file(handler_output_path(args, task))
@@ -1061,7 +1097,7 @@ def commit_push_merge_resolution(args: argparse.Namespace, client: KanboardClien
     try:
         git_commit_no_edit_all(repo)
         commit = git_rev_parse(repo)
-        empty_push = git_push(repo, "origin", "dev")
+        empty_push = git_pull_then_push(repo, ("origin", "dev"), args.git_push_retries)
     except SourceRefreshError as exc:
         mark_red_git_error(args, client, task, "merge conflict resolution commit/push", exc)
         remove_output_file(handler_output_path(args, task))
@@ -1105,7 +1141,7 @@ def handle_merging_task(
     if merge_result.returncode == 0:
         try:
             commit = git_rev_parse(repo)
-            empty_push = git_push(repo, "origin", "dev")
+            empty_push = git_pull_then_push(repo, ("origin", "dev"), args.git_push_retries)
         except SourceRefreshError as exc:
             mark_red_git_error(args, client, task, "clean merge push", exc)
             raise
@@ -1188,6 +1224,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--opencode-arg", action="append", default=[], help="Extra argument passed to opencode run before the prompt; repeat as needed")
     parser.add_argument("--max-tasks", type=positive_int, default=1, help="Maximum handler tasks to run serially; 0 means until no unlocked eligible task remains (default: 1)")
     parser.add_argument("--output-file-issue-limit", type=positive_int, default=5, help="Number of output-file issue comments for a column before leaving the task red (default: 5)")
+    parser.add_argument("--git-push-retries", type=positive_int, default=5, help="Pull-then-push retry attempts for orchestrator git pushes (default: 5)")
     parser.add_argument("--recover-on-fatal", action="store_true", help="Recover from fatal per-iteration errors by recloning src and plans, then continue")
     parser.add_argument("--src-repo", help="Git repository URL/path used to reclone src when --recover-on-fatal is set")
     parser.add_argument("--plans-repo", help="Git repository URL/path used to reclone plans when --recover-on-fatal is set")
