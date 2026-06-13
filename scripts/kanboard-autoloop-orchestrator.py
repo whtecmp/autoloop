@@ -811,44 +811,48 @@ def create_pending_output_file(args: argparse.Namespace, task: SelectedTask) -> 
         raise OrchestratorError(f"failed to create handler output {path}: {exc}") from exc
 
 
-def invalid_output(
-    args: argparse.Namespace,
-    client: KanboardClient,
-    task: SelectedTask,
-    message: str,
-) -> None:
-    mark_red_and_comment(args, client, task.id, f"Skill returned invalid output\n\n{message}")
-    raise OrchestratorError(message)
+def failure_output(task: SelectedTask, comment: str) -> dict[str, Any]:
+    return {"task_id": task.id, "status": "failure", "comments": [comment]}
+
+
+def malformed_output(task: SelectedTask, message: str, content: str | None = None) -> dict[str, Any]:
+    comment = f"Skill returned malformed output\n\n{message}"
+    if content is not None:
+        comment += f"\n\nOutput:\n{content}"
+    return failure_output(task, comment)
 
 
 def read_handler_output(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> dict[str, Any]:
     path = handler_output_path(args, task)
     if not path.exists():
-        mark_red_and_comment(args, client, task.id, "Skill didn't return any output")
-        raise OrchestratorError("handler did not write output JSON")
+        return failure_output(task, "Skill didn't return any output")
 
     try:
-        raw_output = path.read_text(encoding="utf-8").replace("\\n", "")
+        raw_file_text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return malformed_output(task, str(exc))
+
+    try:
+        raw_output = raw_file_text.replace("\\n", "")
         payload = json.loads(raw_output)
-    except (OSError, json.JSONDecodeError) as exc:
-        invalid_output(args, client, task, str(exc))
+    except json.JSONDecodeError as exc:
+        return malformed_output(task, str(exc), raw_file_text)
 
     if not isinstance(payload, dict):
-        invalid_output(args, client, task, "output JSON root must be an object")
+        return malformed_output(task, "output JSON root must be an object", raw_file_text)
 
     if payload.get("task_id") != task.id:
-        invalid_output(args, client, task, f"task_id must be {task.id}, got {payload.get('task_id')!r}")
+        return malformed_output(task, f"task_id must be {task.id}, got {payload.get('task_id')!r}", raw_file_text)
 
     status = payload.get("status")
     if status == "pending":
-        mark_red_and_comment(args, client, task.id, "Skill didn't return any output")
-        raise OrchestratorError("handler left output JSON in pending state")
+        return failure_output(task, "Skill didn't return any output")
     if status not in {"success", "failure"}:
-        invalid_output(args, client, task, "status must be exactly 'success' or 'failure'")
+        return malformed_output(task, "status must be exactly 'success' or 'failure'", raw_file_text)
 
     comments = payload.get("comments", [])
     if not isinstance(comments, list) or any(not isinstance(comment, str) for comment in comments):
-        invalid_output(args, client, task, "comments must be an array of strings")
+        return malformed_output(task, "comments must be an array of strings", raw_file_text)
     payload["comments"] = comments
     if status == "failure" and not any(comment.strip() for comment in comments):
         payload["comments"] = ["Skill didn't provide error"]
