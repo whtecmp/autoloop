@@ -38,7 +38,7 @@
   "mcp": {
     "kanboard": {
       "type": "remote",
-      "url": "http://172.17.0.1:8080/kanboard/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol&token=15677090907e377159d2490659892d33d4b67215e3f3f6ca444a83ee8bdbab64",
+      "url": "http://172.17.0.1:8080/kanboard/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol&token=SECRET_TOKEN",
       "enabled": true
     }
   }
