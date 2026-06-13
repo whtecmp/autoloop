@@ -338,6 +338,30 @@ def cleanup_directory(path: Path) -> str | None:
     return None
 
 
+def remove_path(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def recover_clean_environment(args: argparse.Namespace) -> None:
+    workspace = Path(args.workspace)
+    print("Recovering clean workspace from configured git repositories.", flush=True)
+
+    for path in workspace.iterdir():
+        name = path.name
+        if name in {"src", "plans"} or re.match(r"^(src|qa|merging)-\d+$", name) or re.match(r"^output-\d+\.json$", name):
+            remove_path(path)
+
+    run_command(["git", "clone", args.src_repo, "src"], workspace)
+    run_command(["git", "clone", args.plans_repo, "plans"], workspace)
+    checkout_dev(workspace / "src")
+    checkout_dev(workspace / "plans")
+
+
 def ensure_git_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     if (path / ".git").exists():
@@ -911,6 +935,18 @@ def handle_failure_output(args: argparse.Namespace, client: KanboardClient, task
     remove_output_file(handler_output_path(args, task))
 
 
+def handle_plan_file_retry_issue(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> None:
+    comment = "PLAN FILE WAS NOT CREATED TRY AGAIN"
+    client.add_comment(task.id, comment)
+    issue_count = count_exact_task_comments(client, task.id, comment)
+    remove_output_file(handler_output_path(args, task))
+    if issue_count < args.output_file_issue_limit:
+        remove_ticket_lock(args.ticket_lock_url, args.project_name, task.id, task.column.title)
+        change_color(args, task.id, "yellow")
+        return
+    change_color(args, task.id, "red")
+
+
 def advance_success(
     args: argparse.Namespace,
     client: KanboardClient,
@@ -948,20 +984,18 @@ def complete_from_handler_output(
     advance_success(args, client, project_id, columns, task, output)
 
 
-def commit_push_plan(args: argparse.Namespace, client: KanboardClient, task: SelectedTask, output: dict[str, Any]) -> list[str]:
+def commit_push_plan(args: argparse.Namespace, client: KanboardClient, task: SelectedTask, output: dict[str, Any]) -> list[str] | None:
     plan_file = output_comment_value(output, "PLAN_FILE:")
     if not plan_file:
-        mark_red_and_comment(args, client, task.id, "Skill didn't provide PLAN_FILE")
-        remove_output_file(handler_output_path(args, task))
-        raise OrchestratorError("plan handler did not provide PLAN_FILE")
+        handle_plan_file_retry_issue(args, client, task)
+        return None
 
     plans_dir = (Path(args.workspace) / "plans").resolve()
     try:
         canonical_plan_file = validate_workspace_plan_path(args, task, plan_file)
     except OrchestratorError:
-        mark_red_and_comment(args, client, task.id, f"Invalid PLAN_FILE: {plan_file}")
-        remove_output_file(handler_output_path(args, task))
-        raise
+        handle_plan_file_retry_issue(args, client, task)
+        return None
 
     normalize_plan_src_mentions(args, task, canonical_plan_file)
 
@@ -1154,6 +1188,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--opencode-arg", action="append", default=[], help="Extra argument passed to opencode run before the prompt; repeat as needed")
     parser.add_argument("--max-tasks", type=positive_int, default=1, help="Maximum handler tasks to run serially; 0 means until no unlocked eligible task remains (default: 1)")
     parser.add_argument("--output-file-issue-limit", type=positive_int, default=5, help="Number of output-file issue comments for a column before leaving the task red (default: 5)")
+    parser.add_argument("--recover-on-fatal", action="store_true", help="Recover from fatal per-iteration errors by recloning src and plans, then continue")
+    parser.add_argument("--src-repo", help="Git repository URL/path used to reclone src when --recover-on-fatal is set")
+    parser.add_argument("--plans-repo", help="Git repository URL/path used to reclone plans when --recover-on-fatal is set")
     parser.add_argument("--run-dir", default=".autoloop/runs", help="Directory for rendered prompts and run metadata (default: .autoloop/runs)")
     parser.add_argument("--run-id", default=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"), help="Run id used under --run-dir")
     parser.add_argument("--dry-run", action="store_true", help="Render and print the selected handler prompt without running opencode")
@@ -1161,8 +1198,100 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     if not VALID_QA_DURATION.match(args.qa_duration):
         parser.error("--qa-duration must be a positive integer followed by s, m, or h, such as 10s, 5m, or 3h")
+    if args.recover_on_fatal and (not args.src_repo or not args.plans_repo):
+        parser.error("--recover-on-fatal requires both --src-repo and --plans-repo")
     args.workspace = str(Path(args.workspace).resolve())
     return args
+
+
+def process_iteration(args: argparse.Namespace, client: KanboardClient, project_id: int, columns: dict[str, Column]) -> bool:
+    unlocked_purple = unlock_one_purple_task(args, client, project_id, columns)
+    if unlocked_purple is not None:
+        print(f"Unlocked purple task and marked yellow: {unlocked_purple}", flush=True)
+
+    task, ignored, lock_taken, merge_locked = select_task(client, project_id, args.project_name, columns, args.ticket_lock_url)
+    if ignored:
+        print("Ignored tasks:", ", ".join(str(task_id) for task_id in ignored), flush=True)
+    if lock_taken:
+        print("Skipped locked tasks:", ", ".join(str(task_id) for task_id in lock_taken), flush=True)
+    if merge_locked:
+        print("Skipped merge-locked tasks:", ", ".join(str(task_id) for task_id in merge_locked), flush=True)
+    if task is None:
+        print("No available unlocked yellow work exists.", flush=True)
+        return False
+
+    change_color(args, task.id, "green")
+    remove_output_file(handler_output_path(args, task))
+
+    if task.column.title == "Merging":
+        try:
+            refresh_workspace(args, client, task)
+            handle_merging_task(args, client, project_id, columns, task)
+        finally:
+            if task.merge_lock_acquired:
+                release_project_merge_lock_best_effort(args)
+        return True
+
+    refresh_workspace(args, client, task)
+
+    handler_cwd = Path(args.workspace)
+    extra_comments: list[str] = []
+    wip_dir: Path | None = None
+    qa_work_dir: Path | None = None
+    plan_file = ""
+    if task.column.title == "WIP":
+        plan_file = resolve_plan_file_from_comments(args, client, task)
+        try:
+            wip_dir = prepare_wip_directory(args, task)
+        except OrchestratorError as exc:
+            mark_red_and_comment(args, client, task.id, str(exc))
+            raise
+        handler_cwd = wip_dir
+    elif task.column.title == "QA":
+        plan_file = resolve_plan_file_from_comments(args, client, task)
+        try:
+            qa_work_dir = prepare_qa_directory(args, task)
+        except OrchestratorError as exc:
+            mark_red_and_comment(args, client, task.id, str(exc))
+            raise
+        handler_cwd = qa_work_dir
+
+    create_pending_output_file(args, task)
+    prompt = render_prompt(args, task, plan_file=plan_file)
+    write_run_files(args, task, prompt)
+    run_handler(args, task, prompt, cwd=handler_cwd)
+    output = read_handler_output(args, client, task)
+
+    if output["status"] == "failure":
+        handle_failure_output(args, client, task, output)
+        if wip_dir is not None:
+            cleanup_error = cleanup_directory(wip_dir)
+            if cleanup_error:
+                client.add_comment(task.id, f"Cleanup warning: failed to remove {wip_dir}: {cleanup_error}")
+        if qa_work_dir is not None:
+            cleanup_error = cleanup_directory(qa_work_dir)
+            if cleanup_error:
+                client.add_comment(task.id, f"Cleanup warning: failed to remove {qa_work_dir}: {cleanup_error}")
+        return True
+
+    if task.column.title == "Plan":
+        plan_comments = commit_push_plan(args, client, task, output)
+        if plan_comments is None:
+            return True
+        extra_comments.extend(plan_comments)
+    elif task.column.title == "WIP":
+        extra_comments.extend(commit_push_wip(args, client, task))
+
+    advance_success(args, client, project_id, columns, task, output, extra_comments)
+    if wip_dir is not None:
+        cleanup_error = cleanup_directory(wip_dir)
+        if cleanup_error:
+            client.add_comment(task.id, f"Cleanup warning: failed to remove {wip_dir}: {cleanup_error}")
+    if qa_work_dir is not None:
+        cleanup_error = cleanup_directory(qa_work_dir)
+        if cleanup_error:
+            client.add_comment(task.id, f"Cleanup warning: failed to remove {qa_work_dir}: {cleanup_error}")
+    return True
 
 
 def orchestrate(args: argparse.Namespace) -> int:
@@ -1176,99 +1305,19 @@ def orchestrate(args: argparse.Namespace) -> int:
 
     handled = 0
     while args.max_tasks == 0 or handled < args.max_tasks:
-        unlocked_purple = unlock_one_purple_task(args, client, project_id, columns)
-        if unlocked_purple is not None:
-            print(f"Unlocked purple task and marked yellow: {unlocked_purple}", flush=True)
+        try:
+            did_handle = process_iteration(args, client, project_id, columns)
+        except OrchestratorError as exc:
+            if not args.recover_on_fatal:
+                raise
+            print(f"fatal iteration error; recovering clean environment: {exc}", file=sys.stderr, flush=True)
+            recover_clean_environment(args)
+            time.sleep(0.2)
+            continue
 
-        task, ignored, lock_taken, merge_locked = select_task(client, project_id, args.project_name, columns, args.ticket_lock_url)
-        if ignored:
-            print("Ignored tasks:", ", ".join(str(task_id) for task_id in ignored), flush=True)
-        if lock_taken:
-            print("Skipped locked tasks:", ", ".join(str(task_id) for task_id in lock_taken), flush=True)
-        if merge_locked:
-            print("Skipped merge-locked tasks:", ", ".join(str(task_id) for task_id in merge_locked), flush=True)
-        if task is None:
-            print("No available unlocked yellow work exists.", flush=True)
+        if not did_handle:
             return 0
-
-        change_color(args, task.id, "green")
-        remove_output_file(handler_output_path(args, task))
-
-        if task.column.title == "Merging":
-            try:
-                refresh_workspace(args, client, task)
-                handle_merging_task(args, client, project_id, columns, task)
-            finally:
-                if task.merge_lock_acquired:
-                    release_project_merge_lock_best_effort(args)
-            handled += 1
-            if args.max_tasks != 0 and handled >= args.max_tasks:
-                break
-            time.sleep(0.2)
-            continue
-
-        refresh_workspace(args, client, task)
-
-        handler_cwd = Path(args.workspace)
-        extra_comments: list[str] = []
-        wip_dir: Path | None = None
-        qa_work_dir: Path | None = None
-        plan_file = ""
-        if task.column.title == "WIP":
-            plan_file = resolve_plan_file_from_comments(args, client, task)
-            try:
-                wip_dir = prepare_wip_directory(args, task)
-            except OrchestratorError as exc:
-                mark_red_and_comment(args, client, task.id, str(exc))
-                raise
-            handler_cwd = wip_dir
-        elif task.column.title == "QA":
-            plan_file = resolve_plan_file_from_comments(args, client, task)
-            try:
-                qa_work_dir = prepare_qa_directory(args, task)
-            except OrchestratorError as exc:
-                mark_red_and_comment(args, client, task.id, str(exc))
-                raise
-            handler_cwd = qa_work_dir
-
-        create_pending_output_file(args, task)
-        prompt = render_prompt(args, task, plan_file=plan_file)
-        write_run_files(args, task, prompt)
-        run_handler(args, task, prompt, cwd=handler_cwd)
-        output = read_handler_output(args, client, task)
-
-        if output["status"] == "failure":
-            handle_failure_output(args, client, task, output)
-            if wip_dir is not None:
-                cleanup_error = cleanup_directory(wip_dir)
-                if cleanup_error:
-                    client.add_comment(task.id, f"Cleanup warning: failed to remove {wip_dir}: {cleanup_error}")
-            if qa_work_dir is not None:
-                cleanup_error = cleanup_directory(qa_work_dir)
-                if cleanup_error:
-                    client.add_comment(task.id, f"Cleanup warning: failed to remove {qa_work_dir}: {cleanup_error}")
-            handled += 1
-            if args.max_tasks != 0 and handled >= args.max_tasks:
-                break
-            time.sleep(0.2)
-            continue
-
-        if task.column.title == "Plan":
-            extra_comments.extend(commit_push_plan(args, client, task, output))
-        elif task.column.title == "WIP":
-            extra_comments.extend(commit_push_wip(args, client, task))
-
-        advance_success(args, client, project_id, columns, task, output, extra_comments)
-        if wip_dir is not None:
-            cleanup_error = cleanup_directory(wip_dir)
-            if cleanup_error:
-                client.add_comment(task.id, f"Cleanup warning: failed to remove {wip_dir}: {cleanup_error}")
-        if qa_work_dir is not None:
-            cleanup_error = cleanup_directory(qa_work_dir)
-            if cleanup_error:
-                client.add_comment(task.id, f"Cleanup warning: failed to remove {qa_work_dir}: {cleanup_error}")
         handled += 1
-
         if args.max_tasks != 0 and handled >= args.max_tasks:
             break
         time.sleep(0.2)
