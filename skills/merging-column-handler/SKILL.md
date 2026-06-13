@@ -22,7 +22,7 @@ merge_dir: <current merge directory, usually merging-<task_id>>
 output_json: <absolute path to output-<task_id>.json>
 ```
 
-The orchestrator pre-creates `output-<task_id>.json` in the workspace root and runs this skill with the current working directory set to `merging-<task_id>`. Fill the workspace-root output file with the final JSON result.
+The orchestrator pre-creates the output file at the exact absolute path provided as `output_json` and runs this skill with the current working directory set to `merging-<task_id>`. You MUST fill that exact file. Do not write `/output-<task_id>.json`, do not write a relative `output-<task_id>.json`, and do not create any other output JSON file.
 
 ## Available Opencode Tools
 
@@ -38,7 +38,7 @@ Tool usage rules:
 
 1. Use `kanboard_get_task_details` and `kanboard_get_task_comments` only for context if needed.
 2. Use `read`, `glob`, and `grep` to inspect conflicted files and nearby code.
-3. Use write/edit tools to resolve merge conflicts in the current merge directory and to fill `output-<task_id>.json` in the workspace root.
+3. Use write/edit tools to resolve merge conflicts in the current merge directory and to fill the exact absolute `output_json` path.
 4. Do not move the Kanboard task, change its color, or add Kanboard comments directly.
 5. Do not run workflow finalization commands. The orchestrator owns finalizing and publishing the resolved merge after this skill succeeds.
 
@@ -57,7 +57,7 @@ Do not perform new feature work. Only resolve the conflicts created by the orche
 
 ## Output JSON
 
-Fill the pre-created `output-<task_id>.json` with this exact JSON shape before reporting completion:
+Fill the pre-created file at the exact absolute `output_json` path with this exact JSON shape before reporting completion:
 
 ```json
 {
@@ -77,4 +77,4 @@ Required fields:
 
 ## Completion Rules
 
-Never report completion until `output-<task_id>.json` contains valid JSON matching the contract. Before success, clean any test output, logs, scratch files, temporary files, generated debug files, or unrelated dirty files. The orchestrator, not this skill, will finalize the resolved merge, post comments, change color, and advance the ticket.
+Never report completion until the exact absolute `output_json` path contains valid JSON matching the contract. Before success, clean any test output, logs, scratch files, temporary files, generated debug files, or unrelated dirty files. The orchestrator, not this skill, will finalize the resolved merge, post comments, change color, and advance the ticket.

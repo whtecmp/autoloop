@@ -24,7 +24,7 @@ plan_file: <absolute plan file path resolved by the orchestrator>
 output_json: <absolute path to output-<task_id>.json>
 ```
 
-The orchestrator pre-creates `output-<task_id>.json` in the workspace root and runs this skill with the current working directory set to `qa-<task_id>`. Fill that file with the final JSON result.
+The orchestrator pre-creates the output file at the exact absolute path provided as `output_json` and runs this skill with the current working directory set to `qa-<task_id>`. You MUST fill that exact file. Do not write `/output-<task_id>.json`, do not write a relative `output-<task_id>.json`, and do not create any other output JSON file.
 
 ## Available Opencode Tools
 
@@ -34,7 +34,7 @@ Use only these tool categories for this skill:
 kanboard_get_task_details, kanboard_get_task_comments
 bash
 read, glob, grep
-write/edit tools, only inside `qa-<task_id>` for testing purposes and for the workspace-root `output-<task_id>.json`
+write/edit tools, only inside `qa-<task_id>` for testing purposes and for the exact absolute `output_json` path
 ```
 
 Tool usage rules:
@@ -42,7 +42,7 @@ Tool usage rules:
 1. Use `kanboard_get_task_details` and `kanboard_get_task_comments` to inspect ticket state, WIP comments, Merging comments, branch name, and pushed `dev` commit hash.
 2. Use `read`, `glob`, and `grep` to inspect code and tests.
 3. Use `bash` to run tests/build/lint/manual checks and check date/time during QA batches. Do not create, remove, or copy the `qa-<task_id>` directory; the orchestrator owns that setup and cleanup.
-4. Use write/edit tools only inside `qa-<task_id>` for testing purposes and to fill the workspace-root `output-<task_id>.json`. Writing the output JSON outside `qa-<task_id>` is explicitly allowed and required.
+4. Use write/edit tools only inside `qa-<task_id>` for testing purposes and to fill the exact absolute `output_json` path. Writing the output JSON outside `qa-<task_id>` is explicitly allowed and required only for that exact path.
 5. Do not move the Kanboard task, change its color, or add Kanboard comments directly.
 
 If `qa_duration` is missing, use `10m`.
@@ -88,7 +88,7 @@ Check docs or config changes if relevant
 
 ## Output JSON
 
-Fill the pre-created `output-<task_id>.json` with this exact JSON shape before reporting completion:
+Fill the pre-created file at the exact absolute `output_json` path with this exact JSON shape before reporting completion:
 
 ```json
 {
@@ -108,4 +108,4 @@ Required fields:
 
 ## Completion Rules
 
-Never report completion until `output-<task_id>.json` contains valid JSON matching the contract. The orchestrator, not this skill, will post comments, change color, and advance the ticket.
+Never report completion until the exact absolute `output_json` path contains valid JSON matching the contract. The orchestrator, not this skill, will post comments, change color, and advance the ticket.

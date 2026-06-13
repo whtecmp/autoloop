@@ -256,15 +256,61 @@ def git_has_changes(repo: Path) -> bool:
     return bool(git_status_short(repo))
 
 
-def git_commit_all(repo: Path, message: str) -> None:
-    if not git_has_changes(repo):
-        raise SourceRefreshError(f"no git changes to commit in {repo}", command="git status --short", output="")
+def git_output(result: subprocess.CompletedProcess[str]) -> str:
+    return "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+
+
+def is_nothing_to_commit(output: str) -> bool:
+    lowered = output.lower()
+    return "nothing to commit" in lowered or "no changes added to commit" in lowered
+
+
+def is_empty_push(output: str) -> bool:
+    return "everything up-to-date" in output.lower() or "everything up to date" in output.lower()
+
+
+def git_commit_all(repo: Path, message: str) -> bool:
     run_command(["git", "add", "-A"], repo)
-    run_command(["git", "commit", "-m", message], repo)
+    result = run_command(["git", "commit", "-m", message], repo, check=False)
+    output = git_output(result)
+    if result.returncode == 0:
+        return True
+    if is_nothing_to_commit(output):
+        return False
+    raise SourceRefreshError(
+        f"git commit failed in {repo}: {output or f'exit code {result.returncode}'}",
+        command="git commit -m",
+        output=output or f"exit code {result.returncode}",
+    )
 
 
-def git_push(repo: Path, *args: str) -> None:
-    run_command(["git", "push", *args], repo)
+def git_commit_no_edit_all(repo: Path) -> bool:
+    run_command(["git", "add", "-A"], repo)
+    result = run_command(["git", "commit", "--no-edit"], repo, check=False)
+    output = git_output(result)
+    if result.returncode == 0:
+        return True
+    if is_nothing_to_commit(output):
+        return False
+    raise SourceRefreshError(
+        f"git commit --no-edit failed in {repo}: {output or f'exit code {result.returncode}'}",
+        command="git commit --no-edit",
+        output=output or f"exit code {result.returncode}",
+    )
+
+
+def git_push(repo: Path, *args: str) -> bool:
+    result = run_command(["git", "push", *args], repo, check=False)
+    output = git_output(result)
+    if is_empty_push(output):
+        return True
+    if result.returncode == 0:
+        return False
+    raise SourceRefreshError(
+        f"git push failed in {repo}: {output or f'exit code {result.returncode}'}",
+        command="git push",
+        output=output or f"exit code {result.returncode}",
+    )
 
 
 def git_rev_parse(repo: Path, ref: str = "HEAD") -> str:
@@ -546,6 +592,10 @@ def mark_red_git_error(
     mark_red_and_comment(args, client, task.id, f"Error with git {action}\n\nCommand: {command}\nOutput:\n{output}")
 
 
+def empty_push_comment(task: SelectedTask) -> str:
+    return f"Empty git push happened while task was in column {task.column.title}: nothing new to push."
+
+
 def latest_comment_value(client: KanboardClient, task_id: int, prefix: str) -> str | None:
     comments = client.get_comments(task_id)
     for comment in reversed(comments):
@@ -588,12 +638,13 @@ def validate_workspace_plan_path(args: argparse.Namespace, task: SelectedTask, p
 def resolve_plan_file_from_comments(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> str:
     plan_file = latest_comment_value(client, task.id, "PLAN_FILE:")
     if not plan_file:
-        mark_red_and_comment(args, client, task.id, "No PLAN_FILE comment was found")
-        raise OrchestratorError("missing PLAN_FILE comment")
+        comment = f"No PLAN_FILE available for {task.column.title}; orchestrator cannot continue."
+        mark_red_and_comment(args, client, task.id, comment)
+        raise OrchestratorError(comment)
     try:
         return validate_workspace_plan_path(args, task, plan_file)
     except OrchestratorError as exc:
-        mark_red_and_comment(args, client, task.id, str(exc))
+        mark_red_and_comment(args, client, task.id, f"Invalid PLAN_FILE for {task.column.title}; orchestrator cannot continue.\n\n{exc}")
         raise
 
 
@@ -777,7 +828,8 @@ def read_handler_output(args: argparse.Namespace, client: KanboardClient, task: 
         raise OrchestratorError("handler did not write output JSON")
 
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw_output = path.read_text(encoding="utf-8").replace("\\n", "")
+        payload = json.loads(raw_output)
     except (OSError, json.JSONDecodeError) as exc:
         invalid_output(args, client, task, str(exc))
 
@@ -870,14 +922,17 @@ def commit_push_plan(args: argparse.Namespace, client: KanboardClient, task: Sel
 
     try:
         git_commit_all(plans_dir, f"Add plan for Kanboard task {task.id}")
-        git_push(plans_dir, "origin", "dev")
+        empty_push = git_push(plans_dir, "origin", "dev")
     except SourceRefreshError as exc:
         mark_red_git_error(args, client, task, "plan commit/push", exc)
         remove_output_file(handler_output_path(args, task))
         raise
 
     strip_output_comments_with_prefix(output, "PLAN_FILE:")
-    return [f"PLAN_FILE: {canonical_plan_file}"]
+    comments = [f"PLAN_FILE: {canonical_plan_file}"]
+    if empty_push:
+        comments.append(empty_push_comment(task))
+    return comments
 
 
 def prepare_wip_directory(args: argparse.Namespace, task: SelectedTask) -> Path:
@@ -901,13 +956,16 @@ def commit_push_wip(args: argparse.Namespace, client: KanboardClient, task: Sele
     try:
         git_commit_all(repo, f"Implement Kanboard task {task.id}")
         commit = git_rev_parse(repo)
-        git_push(repo, "-u", "origin", branch)
+        empty_push = git_push(repo, "-u", "origin", branch)
     except SourceRefreshError as exc:
         mark_red_git_error(args, client, task, "implementation commit/push", exc)
         remove_output_file(handler_output_path(args, task))
         raise
 
-    return [f"BRANCH_NAME: {branch}", f"Implementation branch pushed: {branch} ({commit})"]
+    comments = [f"BRANCH_NAME: {branch}", f"Implementation branch pushed: {branch} ({commit})"]
+    if empty_push:
+        comments.append(empty_push_comment(task))
+    return comments
 
 
 def unmerged_files(repo: Path) -> list[str]:
@@ -915,22 +973,22 @@ def unmerged_files(repo: Path) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def commit_push_merge_resolution(args: argparse.Namespace, client: KanboardClient, task: SelectedTask, repo: Path) -> str:
+def commit_push_merge_resolution(args: argparse.Namespace, client: KanboardClient, task: SelectedTask, repo: Path) -> tuple[str, list[str]]:
     if unmerged_files(repo):
         mark_red_and_comment(args, client, task.id, "Merge conflicts were not fully resolved")
         remove_output_file(handler_output_path(args, task))
         raise OrchestratorError("merge conflicts remain after handler success")
 
     try:
-        run_command(["git", "add", "-A"], repo)
-        run_command(["git", "commit", "--no-edit"], repo)
+        git_commit_no_edit_all(repo)
         commit = git_rev_parse(repo)
-        git_push(repo, "origin", "dev")
+        empty_push = git_push(repo, "origin", "dev")
     except SourceRefreshError as exc:
         mark_red_git_error(args, client, task, "merge conflict resolution commit/push", exc)
         remove_output_file(handler_output_path(args, task))
         raise
-    return commit
+    comments = [empty_push_comment(task)] if empty_push else []
+    return commit, comments
 
 
 def merge_source_ref(repo: Path, branch: str) -> str:
@@ -968,12 +1026,15 @@ def handle_merging_task(
     if merge_result.returncode == 0:
         try:
             commit = git_rev_parse(repo)
-            git_push(repo, "origin", "dev")
+            empty_push = git_push(repo, "origin", "dev")
         except SourceRefreshError as exc:
             mark_red_git_error(args, client, task, "clean merge push", exc)
             raise
 
         output = {"task_id": task.id, "status": "success", "comments": []}
+        comments = [f"Merged {branch} into dev and pushed {commit}."]
+        if empty_push:
+            comments.append(empty_push_comment(task))
         advance_success(
             args,
             client,
@@ -981,7 +1042,7 @@ def handle_merging_task(
             columns,
             task,
             output,
-            [f"Merged {branch} into dev and pushed {commit}."],
+            comments,
         )
         cleanup_error = cleanup_directory(repo)
         if cleanup_error:
@@ -1003,7 +1064,9 @@ def handle_merging_task(
         handle_failure_output(args, client, task, output)
         return
 
-    commit = commit_push_merge_resolution(args, client, task, repo)
+    commit, empty_comments = commit_push_merge_resolution(args, client, task, repo)
+    comments = [f"Resolved merge conflicts for {branch} and pushed dev commit {commit}."]
+    comments.extend(empty_comments)
     advance_success(
         args,
         client,
@@ -1011,7 +1074,7 @@ def handle_merging_task(
         columns,
         task,
         output,
-        [f"Resolved merge conflicts for {branch} and pushed dev commit {commit}."],
+        comments,
     )
     cleanup_error = cleanup_directory(repo)
     if cleanup_error:

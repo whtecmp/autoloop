@@ -23,7 +23,7 @@ plan_file: <absolute plan file path resolved by the orchestrator>
 output_json: <absolute path to output-<task_id>.json>
 ```
 
-The orchestrator pre-creates `output-<task_id>.json` in the workspace root and runs this skill with the current working directory set to `src-<task_id>`. Fill the workspace-root output file with the final JSON result.
+The orchestrator pre-creates the output file at the exact absolute path provided as `output_json` and runs this skill with the current working directory set to `src-<task_id>`. You MUST fill that exact file. Do not write `/output-<task_id>.json`, do not write a relative `output-<task_id>.json`, and do not create any other output JSON file.
 
 ## Available Opencode Tools
 
@@ -40,7 +40,7 @@ Tool usage rules:
 
 1. Use `kanboard_get_task_details` and `kanboard_get_task_comments` to inspect ticket state and implementation context.
 2. Use `read` to read the plan file and local files/directories. Use `glob` to locate code files by pattern. Use `grep` to search code.
-3. Use write/edit tools for source-code and test changes inside the current implementation directory and to fill `output-<task_id>.json` in the workspace root.
+3. Use write/edit tools for source-code and test changes inside the current implementation directory and to fill the exact absolute `output_json` path.
 4. Use `bash` only for tests, builds, lint, app runs, and manual checks. Do not use it for repository state-management work.
 5. Do not move the Kanboard task, change its color, or add Kanboard comments directly.
 
@@ -65,7 +65,7 @@ Never implement directly in the shared `src/` directory. The orchestrator runs t
 
 ## Output JSON
 
-Fill the pre-created `output-<task_id>.json` with this exact JSON shape before reporting completion:
+Fill the pre-created file at the exact absolute `output_json` path with this exact JSON shape before reporting completion:
 
 ```json
 {
@@ -87,4 +87,4 @@ Required fields:
 
 ## Completion Rules
 
-Never report completion until `output-<task_id>.json` contains valid JSON matching the contract. Before success, clean any test output, logs, scratch files, temporary files, generated debug files, or unrelated dirty files. The orchestrator, not this skill, will finalize the file changes, post comments, change color, and advance the ticket.
+Never report completion until the exact absolute `output_json` path contains valid JSON matching the contract. Before success, clean any test output, logs, scratch files, temporary files, generated debug files, or unrelated dirty files. The orchestrator, not this skill, will finalize the file changes, post comments, change color, and advance the ticket.

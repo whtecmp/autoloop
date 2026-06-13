@@ -21,7 +21,7 @@ workspace: <workspace root>
 output_json: <absolute path to output-<task_id>.json>
 ```
 
-The orchestrator pre-creates `output-<task_id>.json` in the workspace root. Fill that file with the final JSON result.
+The orchestrator pre-creates the output file at the exact absolute path provided as `output_json`. You MUST fill that exact file. Do not write `/output-<task_id>.json`, do not write a relative `output-<task_id>.json`, and do not create any other output JSON file.
 
 ## Available Opencode Tools
 
@@ -29,13 +29,13 @@ Use only these tool categories for this skill:
 
 ```text
 kanboard_get_task_details, kanboard_get_task_comments
-write/edit tools only for `output-<task_id>.json`
+write/edit tools only for the exact absolute `output_json` path
 ```
 
 Tool usage rules:
 
 1. Use `kanboard_get_task_details` and `kanboard_get_task_comments` to inspect the ticket.
-2. Use write/edit tools only to fill the required JSON result into `output-<task_id>.json`.
+2. Use write/edit tools only to fill the required JSON result into the exact absolute `output_json` path.
 3. Do not move the Kanboard task, change its color, or add Kanboard comments directly.
 4. Do not write plans, change application code, run implementation, or run QA.
 
@@ -45,8 +45,8 @@ Tool usage rules:
 2. Fetch task comments with `kanboard_get_task_comments`.
 3. Read the task title, description, and relevant comments.
 4. Decide whether the ticket is actionable.
-5. If the ticket is actionable, write `status: "success"` to `output-<task_id>.json` with comments explaining it is ready for planning.
-6. If the ticket is unclear, write `status: "failure"` to `output-<task_id>.json` with concrete clarification questions in `comments`.
+5. If the ticket is actionable, write `status: "success"` to the exact absolute `output_json` path with comments explaining it is ready for planning.
+6. If the ticket is unclear, write `status: "failure"` to the exact absolute `output_json` path with concrete clarification questions in `comments`.
 
 ## Actionability Standard
 
@@ -56,7 +56,7 @@ Questions must be specific and actionable. Do not ask generic questions like "Ca
 
 ## Output JSON
 
-Fill the pre-created `output-<task_id>.json` with this exact JSON shape before reporting completion:
+Fill the pre-created file at the exact absolute `output_json` path with this exact JSON shape before reporting completion:
 
 ```json
 {
@@ -76,4 +76,4 @@ Required fields:
 
 ## Completion Rules
 
-Never report completion until `output-<task_id>.json` contains valid JSON matching the contract. The orchestrator, not this skill, will post comments, change color, and advance the ticket.
+Never report completion until the exact absolute `output_json` path contains valid JSON matching the contract. The orchestrator, not this skill, will post comments, change color, and advance the ticket.
