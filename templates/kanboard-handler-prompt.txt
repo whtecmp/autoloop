@@ -1,0 +1,16 @@
+Use the {handler_skill} skill.
+
+project_name: {project_name}
+task_id: {task_id}
+{qa_duration_block}kanboard_url: {kanboard_url}
+kanboard_username: {kanboard_username}
+kanboard_token_path: {kanboard_token_path}
+workspace: {workspace}
+output_json: {output_path}
+implementation_dir: {implementation_dir}
+merge_dir: {merge_dir}
+qa_dir: {qa_dir}
+branch_name: {branch_name}
+plan_file: {plan_file}
+
+Work only on this ticket. Do not search for an executable or API or other external source to run the skill, you need to follow the skill's instructions exactly and run and execute them yourself. Do not move the Kanboard task, change its color, or add normal Kanboard status comments. When done, you MUST report the status by filling the info into the pre-created output json at {output_path}.

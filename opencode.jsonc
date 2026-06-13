@@ -1,0 +1,45 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://172.17.0.1:11434/v1",
+        "apiKey": "ollama"
+      },
+      "models": {
+        "gpt-oss-20b": {
+          "id": "gpt-oss-20b-opencode:latest",
+          "limit": {
+            "context": 32000,
+	    "input": 922000,
+            "output": 128000
+          }
+        }
+      }
+    }
+  },
+  "model": "ollama/gpt-oss-20b",
+  "skills": {
+    "paths": [
+      "/root/.config/opencode/skills"
+    ]
+  },
+  "permission": {
+    "external_directory": {
+      "*": "ask",
+      "/token": "allow",
+      "/root/.config/opencode/scripts/**": "allow",
+      "/root/.config/opencode/skills/**": "allow",
+      "/*": "allow"
+    }
+  },
+  "mcp": {
+    "kanboard": {
+      "type": "remote",
+      "url": "http://172.17.0.1:8080/kanboard/?controller=ModelContextProtocolController&action=handle&plugin=ModelContextProtocol&token=15677090907e377159d2490659892d33d4b67215e3f3f6ca444a83ee8bdbab64",
+      "enabled": true
+    }
+  }
+}

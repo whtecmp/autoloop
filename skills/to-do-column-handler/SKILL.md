@@ -1,11 +1,11 @@
 ---
 name: to-do-column-handler
-description: Use ONLY when handling a yellow Kanboard task in the To Do column for the autoloop workflow.
+description: Use ONLY when evaluating a yellow Kanboard task in the To Do column for the autoloop workflow.
 ---
 
 # To Do Column Handler
 
-Evaluate whether a To Do task is actionable, then either request clarification or move it to planning.
+Evaluate whether a To Do task is actionable. Do not change Kanboard task state. The orchestrator handles colors, comments, and column advancement after reading your output JSON.
 
 ## Inputs
 
@@ -17,45 +17,36 @@ task_id: <Kanboard task id>
 kanboard_url: <optional Kanboard base URL>
 kanboard_username: <optional API username>
 kanboard_token_path: <optional token file path>
+workspace: <workspace root>
+output_json: <absolute path to output-<task_id>.json>
 ```
 
-Use `/root/.config/opencode/scripts/color-change.py` for every task color change. Do not use a color-change skill.
-
-Command pattern:
-
-```bash
-/root/.config/opencode/scripts/color-change.py "<project_name>" <task_id> <red|yellow|green> --kanboard-url "<kanboard_url>" --username "<kanboard_username>" --token-path "<kanboard_token_path>"
-```
-
-Pass `kanboard_url` as the Kanboard base URL, for example `http://172.17.0.1:8080/`.
+The orchestrator pre-creates `output-<task_id>.json` in the workspace root. Fill that file with the final JSON result.
 
 ## Available Opencode Tools
 
 Use only these tool categories for this skill:
 
 ```text
-kanboard_get_task_details, kanboard_get_task_comments, kanboard_get_projects, kanboard_get_columns, kanboard_move_task, kanboard_add_task_comment
-bash
+kanboard_get_task_details, kanboard_get_task_comments
+write/edit tools only for `output-<task_id>.json`
 ```
 
 Tool usage rules:
 
 1. Use `kanboard_get_task_details` and `kanboard_get_task_comments` to inspect the ticket.
-2. Use `bash` to run `/root/.config/opencode/scripts/color-change.py` for every color change.
-3. Use `kanboard_get_projects` and `kanboard_get_columns` before moving the task, so the `Plan` column is resolved exactly once.
-4. Use `kanboard_move_task` to move clear tickets to `Plan`.
-5. Use `kanboard_add_task_comment` for clarification questions or ready-for-planning comments.
-6. Do not use edit/write tools. The To Do handler must not write plan files or code.
+2. Use write/edit tools only to fill the required JSON result into `output-<task_id>.json`.
+3. Do not move the Kanboard task, change its color, or add Kanboard comments directly.
+4. Do not write plans, change application code, run implementation, or run QA.
 
 ## Required Workflow
 
 1. Fetch task details with `kanboard_get_task_details`.
 2. Fetch task comments with `kanboard_get_task_comments`.
-3. Run `/root/.config/opencode/scripts/color-change.py` to mark the task `green`.
-4. Read the task title, description, and relevant comments.
-5. Decide whether the ticket is actionable.
-6. If the ticket is unclear, run `/root/.config/opencode/scripts/color-change.py` to mark it `red`, add a comment with concrete questions, and leave it in `To Do`.
-7. If the ticket is clear, resolve the project by exact name with `kanboard_get_projects`, fetch columns with `kanboard_get_columns`, confirm `Plan` exists exactly once, move it to `Plan` with `kanboard_move_task`, run `/root/.config/opencode/scripts/color-change.py` to mark it `yellow`, and add a short comment saying it is ready for planning.
+3. Read the task title, description, and relevant comments.
+4. Decide whether the ticket is actionable.
+5. If the ticket is actionable, write `status: "success"` to `output-<task_id>.json` with comments explaining it is ready for planning.
+6. If the ticket is unclear, write `status: "failure"` to `output-<task_id>.json` with concrete clarification questions in `comments`.
 
 ## Actionability Standard
 
@@ -63,10 +54,26 @@ A ticket is actionable when the implementer can determine the requested behavior
 
 Questions must be specific and actionable. Do not ask generic questions like "Can you clarify?". Ask for the missing decision, input, environment, expected behavior, or acceptance criterion.
 
-## Failure Handling
+## Output JSON
 
-If fetching task details/comments fails, if the task is not in the expected project, if the `Plan` column cannot be resolved exactly once, or if a required color change fails, stop and report the failure. Do not move the task after a failed required color change.
+Fill the pre-created `output-<task_id>.json` with this exact JSON shape before reporting completion:
+
+```json
+{
+  "task_id": 123,
+  "status": "success",
+  "comments": ["Ready for planning: scope and success criteria are clear."]
+}
+```
+
+Failure output MUST use `status: "failure"` and MUST include at least one useful string in `comments`.
+
+Required fields:
+
+1. `task_id`: integer matching the input task id.
+2. `status`: exactly `success` or `failure`.
+3. `comments`: array of strings for the orchestrator to add to the Kanboard ticket. If `status` is `failure`, this array MUST contain at least one useful error or clarification comment.
 
 ## Completion Rules
 
-Do not write plans, change application code, run implementation, or run QA. Do not change task colors with MCP; every color change must use `/root/.config/opencode/scripts/color-change.py`.
+Never report completion until `output-<task_id>.json` contains valid JSON matching the contract. The orchestrator, not this skill, will post comments, change color, and advance the ticket.

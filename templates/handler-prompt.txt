@@ -1,0 +1,9 @@
+Use the {handler_skill} skill.
+
+project_name: {project_name}
+task_id: {task_id}
+{qa_duration_block}kanboard_url: {kanboard_url}
+kanboard_username: {kanboard_username}
+kanboard_token_path: {kanboard_token_path}
+
+Work only on this ticket. Do not search for an executable or API or other external source to run the skill, you need to follow the skill's instructions exactly and run and execute them yourself. When done, you MUST report the status by filling the info into output json in output-<ticket-id>.json

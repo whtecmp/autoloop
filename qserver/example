@@ -1,0 +1,45 @@
+New merge API examples
+
+Start the server:
+
+```sh
+python3 qserver.py --host 127.0.0.1 --port 8000
+```
+
+Ask whether a project can merge now:
+
+```sh
+curl -X POST http://127.0.0.1:8000/can-merge-now \
+  -H 'Content-Type: application/json' \
+  -d '"my-project"'
+```
+
+Possible responses:
+
+```text
+yes
+```
+
+```text
+no
+```
+
+When the response is `yes`, the server creates `my-project.lock`. Future requests for
+the same project return `no` until the lock is removed.
+
+Tell the server the project is done merging:
+
+```sh
+curl -X POST http://127.0.0.1:8000/done-merging \
+  -H 'Content-Type: application/json' \
+  -d '"my-project"'
+```
+
+Response:
+
+```text
+ok
+```
+
+This removes `my-project.lock` if it exists. The server returns `ok` even if the lock
+file was already missing.
