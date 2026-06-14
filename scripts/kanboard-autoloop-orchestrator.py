@@ -377,13 +377,13 @@ def recover_clean_environment(args: argparse.Namespace) -> None:
 
     for path in workspace.iterdir():
         name = path.name
-        if name in {"src", "plans"} or re.match(r"^(src|qa|merging)-\d+$", name) or re.match(r"^output-\d+\.json$", name):
+        if name in {"src", "plans"} or re.match(r"^(src|qa|merging|work)-\d+$", name) or re.match(r"^output-\d+\.json$", name):
             remove_path(path)
 
     run_command(["git", "clone", args.src_repo, "src"], workspace)
     run_command(["git", "clone", args.plans_repo, "plans"], workspace)
     checkout_dev(workspace / "src")
-    checkout_dev(workspace / "plans")
+    checkout_plans_master_empty(args)
 
 
 def ensure_git_repo(path: Path) -> None:
@@ -683,24 +683,90 @@ def validate_workspace_plan_path(args: argparse.Namespace, task: SelectedTask, p
     return plan_path.relative_to(workspace).as_posix()
 
 
+def plan_branch(task: SelectedTask) -> str:
+    return f"plan-{task.id}"
+
+
+def plans_repo(args: argparse.Namespace) -> Path:
+    return Path(args.workspace) / "plans"
+
+
+def assert_plans_master_empty(repo: Path) -> None:
+    entries = [entry.name for entry in repo.iterdir() if entry.name != ".git"]
+    if entries:
+        raise SourceRefreshError(
+            f"plans master is not empty: {', '.join(sorted(entries))}",
+            command="check plans master empty",
+            output=", ".join(sorted(entries)),
+        )
+
+
+def checkout_plans_master_empty(args: argparse.Namespace) -> None:
+    repo = plans_repo(args)
+    run_command(["git", "fetch", "--all", "--prune"], repo)
+    if git_branch_exists(repo, "refs/heads/master"):
+        run_command(["git", "checkout", "master"], repo)
+    elif git_branch_exists(repo, "refs/remotes/origin/master"):
+        run_command(["git", "checkout", "-b", "master", "--track", "origin/master"], repo)
+    else:
+        raise SourceRefreshError("origin/master does not exist in plans", command="git checkout master", output="missing origin/master")
+    run_command(["git", "pull", "--ff-only", "origin", "master"], repo)
+    if git_status_short(repo):
+        raise SourceRefreshError("plans master is dirty", command="git status --short", output=git_status_short(repo))
+    assert_plans_master_empty(repo)
+
+
+def checkout_new_plan_branch(args: argparse.Namespace, task: SelectedTask) -> None:
+    repo = plans_repo(args)
+    branch = plan_branch(task)
+    run_command(["git", "checkout", "-B", branch, "master"], repo)
+
+
+def checkout_existing_plan_branch(args: argparse.Namespace, branch: str) -> None:
+    repo = plans_repo(args)
+    run_command(["git", "fetch", "--all", "--prune"], repo)
+    if git_branch_exists(repo, f"refs/heads/{branch}"):
+        run_command(["git", "checkout", branch], repo)
+    elif git_branch_exists(repo, f"refs/remotes/origin/{branch}"):
+        run_command(["git", "checkout", "-b", branch, "--track", f"origin/{branch}"], repo)
+    else:
+        raise SourceRefreshError(f"plan branch {branch!r} was not found", command="git checkout plan branch", output=branch)
+    if git_status_short(repo):
+        raise SourceRefreshError("plan branch is dirty", command="git status --short", output=git_status_short(repo))
+
+
+def find_single_plan_file(args: argparse.Namespace) -> str | None:
+    repo = plans_repo(args)
+    files = [path for path in repo.rglob("*") if path.is_file() and ".git" not in path.parts]
+    if len(files) != 1:
+        return None
+    return files[0].relative_to(Path(args.workspace)).as_posix()
+
+
 def normalize_plan_src_mentions(args: argparse.Namespace, task: SelectedTask, canonical_plan_file: str) -> None:
     plan_path = Path(args.workspace) / canonical_plan_file
     text = plan_path.read_text(encoding="utf-8")
-    normalized = re.sub(r"\bsrc\b(?!-\d+)", f"src-{task.id}", text)
+    normalized = re.sub(r"\bsrc\b(?!-\d+)", f"work-{task.id}", text)
     if normalized != text:
         plan_path.write_text(normalized, encoding="utf-8")
 
 
 def resolve_plan_file_from_comments(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> str:
+    branch = latest_comment_value(client, task.id, "PLAN_BRANCH:")
+    if not branch:
+        comment = f"No PLAN_BRANCH available for {task.column.title}; orchestrator cannot continue."
+        mark_red_and_comment(args, client, task.id, comment)
+        raise OrchestratorError(comment)
     plan_file = latest_comment_value(client, task.id, "PLAN_FILE:")
     if not plan_file:
         comment = f"No PLAN_FILE available for {task.column.title}; orchestrator cannot continue."
         mark_red_and_comment(args, client, task.id, comment)
         raise OrchestratorError(comment)
     try:
+        checkout_existing_plan_branch(args, branch)
         return validate_workspace_plan_path(args, task, plan_file)
     except OrchestratorError as exc:
-        mark_red_and_comment(args, client, task.id, f"Invalid PLAN_FILE for {task.column.title}; orchestrator cannot continue.\n\n{exc}")
+        mark_red_and_comment(args, client, task.id, f"Invalid PLAN_BRANCH/PLAN_FILE for {task.column.title}; orchestrator cannot continue.\n\n{exc}")
         raise
 
 
@@ -750,8 +816,19 @@ def refresh_repo(args: argparse.Namespace, client: KanboardClient, task: Selecte
 
 
 def refresh_workspace(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> None:
-    refresh_repo(args, client, task, "plans")
     refresh_repo(args, client, task, "src")
+    try:
+        checkout_plans_master_empty(args)
+    except SourceRefreshError as exc:
+        command = exc.command or "unknown"
+        output = exc.output or str(exc)
+        mark_red_and_comment(
+            args,
+            client,
+            task.id,
+            f"Error with refresh\n\nCommand: {command}\nOutput:\n{output}",
+        )
+        raise
 
 
 def validate_template(template: str, context: dict[str, str]) -> None:
@@ -785,9 +862,10 @@ def render_prompt(args: argparse.Namespace, task: SelectedTask, plan_file: str =
         "ticket_lock_url": args.ticket_lock_url,
         "workspace": str(Path(args.workspace).resolve()),
         "output_path": str(handler_output_path(args, task)),
-        "implementation_dir": str(implementation_dir(args, task)),
-        "merge_dir": str(merge_dir(args, task)),
-        "qa_dir": str(qa_dir(args, task)),
+        "work_dir": str(work_dir(args, task)),
+        "implementation_dir": str(work_dir(args, task)),
+        "merge_dir": str(work_dir(args, task)),
+        "qa_dir": str(work_dir(args, task)),
         "branch_name": implementation_branch(task),
         "plan_file": plan_file_prompt,
         "run_id": args.run_id,
@@ -833,16 +911,8 @@ def implementation_branch(task: SelectedTask) -> str:
     return f"task-{task.id}"
 
 
-def implementation_dir(args: argparse.Namespace, task: SelectedTask) -> Path:
-    return Path(args.workspace) / f"src-{task.id}"
-
-
-def merge_dir(args: argparse.Namespace, task: SelectedTask) -> Path:
-    return Path(args.workspace) / f"merging-{task.id}"
-
-
-def qa_dir(args: argparse.Namespace, task: SelectedTask) -> Path:
-    return Path(args.workspace) / f"qa-{task.id}"
+def work_dir(args: argparse.Namespace, task: SelectedTask) -> Path:
+    return Path(args.workspace) / f"work-{task.id}"
 
 
 def remove_output_file(path: Path) -> None:
@@ -963,7 +1033,7 @@ def handle_plan_failure_output(args: argparse.Namespace, client: KanboardClient,
     try:
         handle_failure_output(args, client, task, output)
     finally:
-        reset_and_refresh_repo(Path(args.workspace) / "plans")
+        checkout_plans_master_empty(args)
 
 
 def handle_plan_file_retry_issue(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> None:
@@ -974,10 +1044,10 @@ def handle_plan_file_retry_issue(args: argparse.Namespace, client: KanboardClien
     if issue_count < args.output_file_issue_limit:
         remove_ticket_lock(args.ticket_lock_url, args.project_name, task.id, task.column.title)
         change_color(args, task.id, "yellow")
-        reset_and_refresh_repo(Path(args.workspace) / "plans")
+        checkout_plans_master_empty(args)
         return
     change_color(args, task.id, "red")
-    reset_and_refresh_repo(Path(args.workspace) / "plans")
+    checkout_plans_master_empty(args)
 
 
 def advance_success(
@@ -1021,30 +1091,24 @@ def complete_from_handler_output(
 
 
 def commit_push_plan(args: argparse.Namespace, client: KanboardClient, task: SelectedTask, output: dict[str, Any]) -> list[str] | None:
-    plan_file = output_comment_value(output, "PLAN_FILE:")
-    if not plan_file:
+    canonical_plan_file = find_single_plan_file(args)
+    if canonical_plan_file is None:
         handle_plan_file_retry_issue(args, client, task)
         return None
-
     plans_dir = (Path(args.workspace) / "plans").resolve()
-    try:
-        canonical_plan_file = validate_workspace_plan_path(args, task, plan_file)
-    except OrchestratorError:
-        handle_plan_file_retry_issue(args, client, task)
-        return None
 
     normalize_plan_src_mentions(args, task, canonical_plan_file)
 
     try:
         git_commit_all(plans_dir, f"Add plan for Kanboard task {task.id}")
-        empty_push = git_pull_then_push(plans_dir, ("origin", "dev"), args.git_push_retries)
+        empty_push = git_push(plans_dir, "-u", "origin", plan_branch(task))
     except SourceRefreshError as exc:
         mark_red_git_error(args, client, task, "plan commit/push", exc)
         remove_output_file(handler_output_path(args, task))
         raise
 
     strip_output_comments_with_prefix(output, "PLAN_FILE:")
-    comments = [f"PLAN_FILE: {canonical_plan_file}"]
+    comments = [f"PLAN_BRANCH: {plan_branch(task)}", f"PLAN_FILE: {canonical_plan_file}"]
     if empty_push:
         comments.append(empty_push_comment(task))
     return comments
@@ -1052,7 +1116,7 @@ def commit_push_plan(args: argparse.Namespace, client: KanboardClient, task: Sel
 
 def prepare_wip_directory(args: argparse.Namespace, task: SelectedTask) -> Path:
     source = Path(args.workspace) / "src"
-    destination = implementation_dir(args, task)
+    destination = work_dir(args, task)
     prepare_copy(source, destination)
     run_command(["git", "checkout", "-B", implementation_branch(task)], destination)
     return destination
@@ -1060,18 +1124,18 @@ def prepare_wip_directory(args: argparse.Namespace, task: SelectedTask) -> Path:
 
 def prepare_qa_directory(args: argparse.Namespace, task: SelectedTask) -> Path:
     source = Path(args.workspace) / "src"
-    destination = qa_dir(args, task)
+    destination = work_dir(args, task)
     prepare_copy(source, destination)
     return destination
 
 
 def commit_push_wip(args: argparse.Namespace, client: KanboardClient, task: SelectedTask) -> list[str]:
-    repo = implementation_dir(args, task)
+    repo = work_dir(args, task)
     branch = implementation_branch(task)
     try:
         git_commit_all(repo, f"Implement Kanboard task {task.id}")
         commit = git_rev_parse(repo)
-        empty_push = git_pull_then_push(repo, ("-u", "origin", branch), args.git_push_retries)
+        empty_push = git_push(repo, "-u", "origin", branch)
     except SourceRefreshError as exc:
         mark_red_git_error(args, client, task, "implementation commit/push", exc)
         remove_output_file(handler_output_path(args, task))
@@ -1126,7 +1190,7 @@ def handle_merging_task(
         mark_red_and_comment(args, client, task.id, "No BRANCH_NAME comment was found for merging")
         raise OrchestratorError("missing BRANCH_NAME for merging task")
 
-    repo = merge_dir(args, task)
+    repo = work_dir(args, task)
     try:
         prepare_copy(Path(args.workspace) / "src", repo)
         run_command(["git", "fetch", "--all", "--prune"], repo)
@@ -1276,7 +1340,9 @@ def process_iteration(args: argparse.Namespace, client: KanboardClient, project_
     wip_dir: Path | None = None
     qa_work_dir: Path | None = None
     plan_file = ""
-    if task.column.title == "WIP":
+    if task.column.title == "Plan":
+        checkout_new_plan_branch(args, task)
+    elif task.column.title == "WIP":
         plan_file = resolve_plan_file_from_comments(args, client, task)
         try:
             wip_dir = prepare_wip_directory(args, task)
@@ -1309,6 +1375,8 @@ def process_iteration(args: argparse.Namespace, client: KanboardClient, project_
             cleanup_error = cleanup_directory(qa_work_dir)
             if cleanup_error:
                 client.add_comment(task.id, f"Cleanup warning: failed to remove {qa_work_dir}: {cleanup_error}")
+        if task.column.title in {"Plan", "WIP", "QA"}:
+            checkout_plans_master_empty(args)
         return True
 
     if task.column.title == "Plan":
@@ -1328,6 +1396,8 @@ def process_iteration(args: argparse.Namespace, client: KanboardClient, project_
         cleanup_error = cleanup_directory(qa_work_dir)
         if cleanup_error:
             client.add_comment(task.id, f"Cleanup warning: failed to remove {qa_work_dir}: {cleanup_error}")
+    if task.column.title in {"Plan", "WIP", "QA"}:
+        checkout_plans_master_empty(args)
     return True
 
 

@@ -46,10 +46,10 @@ Tool usage rules:
 1. Fetch task details with `kanboard_get_task_details`.
 2. Fetch task comments with `kanboard_get_task_comments`.
 3. Analyze the repository and ticket requirements.
-4. Write one detailed markdown plan file inside `plans/`.
+4. Write exactly one detailed markdown plan file inside `plans/`. Do not create more than one plan file.
 5. Remove any temporary notes, scratch files, logs, generated debug artifacts, or unrelated dirty files before reporting success.
 6. If planning is blocked, write `status: "failure"` to the exact absolute `output_json` path with specific comments explaining the issue.
-7. If planning succeeds and the plan file exists, write `status: "success"` to the exact absolute `output_json` path. Include a comment using the exact format `PLAN_FILE: <path>`.
+7. If planning succeeds and exactly one plan file exists, write `status: "success"` to the exact absolute `output_json` path. Do not include `PLAN_FILE:` in comments; the orchestrator will determine and comment the plan file path.
 
 ## Plan File
 
@@ -90,7 +90,6 @@ Fill the pre-created file at the exact absolute `output_json` path with this exa
   "task_id": 123,
   "status": "success",
   "comments": [
-    "PLAN_FILE: plans/kanboard-task-123-example.md",
     "Plan file is ready."
   ]
 }

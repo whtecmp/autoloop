@@ -5,7 +5,7 @@ description: Use ONLY when handling a yellow Kanboard task in the Merging column
 
 # Merging Column Handler
 
-Resolve existing merge conflicts in the current `merging-<task_id>` directory and fill the pre-created output JSON. The orchestrator already prepared the merge directory and attempted the merge. Do not restart the workflow or perform finalization work; only resolve the existing conflicts.
+Resolve existing merge conflicts in the current `work-<task_id>` directory and fill the pre-created output JSON. The orchestrator already prepared the work directory and attempted the merge. Do not restart the workflow or perform finalization work; only resolve the existing conflicts.
 
 ## Inputs
 
@@ -18,11 +18,11 @@ kanboard_url: <optional Kanboard base URL>
 kanboard_username: <optional API username>
 kanboard_token_path: <optional token file path>
 workspace: <workspace root containing plans/ and src/>
-merge_dir: <current merge directory, usually merging-<task_id>>
+work_dir: <current work directory, usually work-<task_id>>
 output_json: <absolute path to output-<task_id>.json>
 ```
 
-The orchestrator pre-creates the output file at the exact absolute path provided as `output_json` and runs this skill with the current working directory set to `merging-<task_id>`. You MUST fill that exact file. Do not write `/output-<task_id>.json`, do not write a relative `output-<task_id>.json`, and do not create any other output JSON file.
+The orchestrator pre-creates the output file at the exact absolute path provided as `output_json` and runs this skill with the current working directory set to `work-<task_id>`. You MUST fill that exact file. Do not write `/output-<task_id>.json`, do not write a relative `output-<task_id>.json`, and do not create any other output JSON file.
 
 ## Available Opencode Tools
 

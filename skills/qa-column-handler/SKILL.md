@@ -5,7 +5,7 @@ description: Use ONLY when handling a yellow Kanboard task in the QA column by t
 
 # QA Column Handler
 
-Verify work that has been merged to `dev` in an isolated `qa-<task_id>` copy for the configured QA duration, then write a structured result. Do not change Kanboard task state. The orchestrator handles colors, comments, and final advancement after reading your output JSON.
+Verify work that has been merged to `dev` in an isolated `work-<task_id>` copy for the configured QA duration, then write a structured result. Do not change Kanboard task state. The orchestrator handles colors, comments, and final advancement after reading your output JSON.
 
 ## Inputs
 
@@ -19,12 +19,12 @@ kanboard_url: <optional Kanboard base URL>
 kanboard_username: <optional API username>
 kanboard_token_path: <optional token file path>
 workspace: <workspace root>
-qa_dir: <current QA directory, usually qa-<task_id>>
+work_dir: <current work directory, usually work-<task_id>>
 plan_file: <absolute plan file path resolved by the orchestrator>
 output_json: <absolute path to output-<task_id>.json>
 ```
 
-The orchestrator pre-creates the output file at the exact absolute path provided as `output_json` and runs this skill with the current working directory set to `qa-<task_id>`. You MUST fill that exact file. Do not write `/output-<task_id>.json`, do not write a relative `output-<task_id>.json`, and do not create any other output JSON file.
+The orchestrator pre-creates the output file at the exact absolute path provided as `output_json` and runs this skill with the current working directory set to `work-<task_id>`. You MUST fill that exact file. Do not write `/output-<task_id>.json`, do not write a relative `output-<task_id>.json`, and do not create any other output JSON file.
 
 ## Available Opencode Tools
 
@@ -34,15 +34,15 @@ Use only these tool categories for this skill:
 kanboard_get_task_details, kanboard_get_task_comments
 bash
 read, glob, grep
-write/edit tools, only inside `qa-<task_id>` for testing purposes and for the exact absolute `output_json` path
+write/edit tools, only inside `work-<task_id>` for testing purposes and for the exact absolute `output_json` path
 ```
 
 Tool usage rules:
 
 1. Use `kanboard_get_task_details` and `kanboard_get_task_comments` to inspect ticket state, WIP comments, Merging comments, branch name, and pushed `dev` commit hash.
 2. Use `read`, `glob`, and `grep` to inspect code and tests.
-3. Use `bash` to run tests/build/lint/manual checks and check date/time during QA batches. Do not create, remove, or copy the `qa-<task_id>` directory; the orchestrator owns that setup and cleanup.
-4. Use write/edit tools only inside `qa-<task_id>` for testing purposes and to fill the exact absolute `output_json` path. Writing the output JSON outside `qa-<task_id>` is explicitly allowed and required only for that exact path.
+3. Use `bash` to run tests/build/lint/manual checks and check date/time during QA batches. Do not create, remove, or copy the `work-<task_id>` directory; the orchestrator owns that setup and cleanup.
+4. Use write/edit tools only inside `work-<task_id>` for testing purposes and to fill the exact absolute `output_json` path. Writing the output JSON outside `work-<task_id>` is explicitly allowed and required only for that exact path.
 5. Do not move the Kanboard task, change its color, or add Kanboard comments directly.
 
 If `qa_duration` is missing, use `10m`.
@@ -63,8 +63,8 @@ Convert the duration to elapsed seconds for the QA loop:
 2. Fetch task comments with `kanboard_get_task_comments`.
 3. Validate and parse `qa_duration`, using `10m` if it was not provided.
 4. Review the WIP and Merging summary comments, branch name, pushed `dev` commit hash, the provided `plan_file`, and relevant implementation/merge diff.
-5. Confirm the current working directory is the orchestrator-created `qa-<task_id>` copy.
-6. Run all QA commands, manual checks, automated tests, app runs, and inspections from `qa-<task_id>`, not from shared `src`.
+5. Confirm the current working directory is the orchestrator-created `work-<task_id>` copy.
+6. Run all QA commands, manual checks, automated tests, app runs, and inspections from `work-<task_id>`, not from shared `src`.
 7. Run repeated batches of manual and automated verification.
 8. Check current date/time after every batch.
 9. Continue until at least the configured `qa_duration` has elapsed. Spend the full configured time testing thoroughly in headless mode as much as the environment allows.
